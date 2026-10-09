@@ -24,6 +24,22 @@ const INTENTOS_PERMITIDOS = 5;
 const BLOQUEO_MS = 5 * 60 * 1000;
 const CONTRASENA_MINIMA = 8;
 
+// Fondos de pantalla. Los incluidos son dibujos propios del sistema; "propio"
+// es una imagen que sube el administrador y que queda solo en esta computadora.
+const FONDOS_INCLUIDOS = ['atardecer', 'noche', 'cerezos'];
+const TAMANO_MAXIMO_IMAGEN = 8 * 1024 * 1024;
+const TIPOS_DE_IMAGEN = ['image/jpeg', 'image/png', 'image/webp'];
+
+// Reconoce el formato por los primeros bytes del archivo, no por lo que diga
+// quien lo envía. Solo se aceptan fotos (JPG, PNG, WebP), nunca SVG ni HTML.
+function tipoDeImagen(bytes) {
+  if (bytes.length < 12) return null;
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+  if (bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+  if (bytes.toString('latin1', 0, 4) === 'RIFF' && bytes.toString('latin1', 8, 12) === 'WEBP') return 'image/webp';
+  return null;
+}
+
 class ErrorApi extends Error {
   constructor(estado, mensaje) {
     super(mensaje);
@@ -104,18 +120,20 @@ function hoyLocal() {
 
 // ---------- API ----------
 
-function crearApi(db) {
+function crearApi(db, { carpetaDatos = null } = {}) {
   const rutas = [];
+  const archivoFondo = carpetaDatos ? path.join(carpetaDatos, 'fondo-propio') : null;
   const fallosDeEntrada = new Map();
   let hashSenuelo = null;
 
-  function ruta(metodo, patron, permiso, manejador) {
+  // opciones.imagen: la ruta recibe una imagen en lugar de datos JSON.
+  function ruta(metodo, patron, permiso, manejador, opciones = {}) {
     const nombres = [];
     const fuente = patron.replace(/:(\w+)/g, (_, nombre) => {
       nombres.push(nombre);
       return '(\\d{1,9})';
     });
-    rutas.push({ metodo, expresion: new RegExp(`^${fuente}$`), nombres, permiso, manejador });
+    rutas.push({ metodo, expresion: new RegExp(`^${fuente}$`), nombres, permiso, manejador, ...opciones });
   }
 
   // ----- Sesiones -----
@@ -199,6 +217,7 @@ function crearApi(db) {
       planta: PLANTA,
       configurado: hayUsuarios(),
       usuario: sesion ? datosDeUsuario(sesion) : null,
+      fondo: fondoActual(),
     };
   });
 
@@ -719,6 +738,77 @@ function crearApi(db) {
     return { ok: true };
   });
 
+  // ----- Fondo de pantalla -----
+
+  function ajuste(clave, porDefecto) {
+    const fila = db.prepare('SELECT valor FROM ajustes WHERE clave = ?').get(clave);
+    return fila ? fila.valor : porDefecto;
+  }
+
+  function guardarAjuste(clave, valor) {
+    db.prepare(
+      'INSERT INTO ajustes (clave, valor) VALUES (?, ?) ON CONFLICT (clave) DO UPDATE SET valor = excluded.valor',
+    ).run(clave, String(valor));
+  }
+
+  function hayImagenPropia() {
+    return Boolean(archivoFondo && ajuste('fondo_propio_tipo', '') && fs.existsSync(archivoFondo));
+  }
+
+  function fondoActual() {
+    const propia = hayImagenPropia();
+    const urlPropia = propia ? `/api/fondo/imagen?v=${ajuste('fondo_propio_version', '0')}` : null;
+    let nombre = ajuste('fondo', 'ninguno');
+    if (nombre === 'propio' && !propia) nombre = 'ninguno';
+    let url = null;
+    if (nombre === 'propio') url = urlPropia;
+    else if (FONDOS_INCLUIDOS.includes(nombre)) url = `/fondos/${nombre}.svg`;
+    return { nombre, url, urlPropia };
+  }
+
+  ruta('PUT', '/api/fondo', 'admin', ({ cuerpo }) => {
+    const nombre = opcion(cuerpo.fondo, ['ninguno', 'propio', ...FONDOS_INCLUIDOS], 'fondo');
+    if (nombre === 'propio' && !hayImagenPropia()) {
+      throw new ErrorApi(400, 'Primero suba una imagen para usarla como fondo.');
+    }
+    guardarAjuste('fondo', nombre);
+    return fondoActual();
+  });
+
+  // Recibe la imagen tal cual (no JSON) y la deja como fondo del sistema.
+  ruta(
+    'POST',
+    '/api/fondo/imagen',
+    'admin',
+    ({ cuerpo }) => {
+      if (!archivoFondo) throw new ErrorApi(500, 'Este servidor no tiene dónde guardar imágenes.');
+      const tipo = tipoDeImagen(cuerpo);
+      if (!tipo) throw new ErrorApi(400, 'El archivo no es una imagen JPG, PNG o WebP.');
+      // Se escribe primero en un archivo temporal para no dejar una imagen a medias.
+      const temporal = `${archivoFondo}.tmp`;
+      fs.writeFileSync(temporal, cuerpo);
+      fs.renameSync(temporal, archivoFondo);
+      guardarAjuste('fondo_propio_tipo', tipo);
+      guardarAjuste('fondo_propio_version', Number(ajuste('fondo_propio_version', '0')) + 1);
+      guardarAjuste('fondo', 'propio');
+      return fondoActual();
+    },
+    { imagen: true },
+  );
+
+  // Pública a propósito: la pantalla de entrada también muestra el fondo.
+  ruta('GET', '/api/fondo/imagen', 'publico', ({ res }) => {
+    if (!hayImagenPropia()) throw new ErrorApi(404, 'No hay una imagen de fondo.');
+    res.writeHead(200, {
+      'Content-Type': ajuste('fondo_propio_tipo', 'application/octet-stream'),
+      'Content-Length': fs.statSync(archivoFondo).size,
+      'Cache-Control': 'public, max-age=31536000, immutable',
+    });
+    const flujo = fs.createReadStream(archivoFondo);
+    flujo.on('error', () => res.destroy());
+    flujo.pipe(res);
+  });
+
   // ----- Respaldo -----
 
   // Descarga una copia completa y consistente de la base de datos.
@@ -746,31 +836,41 @@ function crearApi(db) {
 
   // ---------- Atención de peticiones ----------
 
-  function leerCuerpo(req) {
+  function leerBytes(req, maximo, mensajeExceso) {
     return new Promise((resolver, rechazar) => {
       const trozos = [];
       let total = 0;
+      let excedido = false;
       req.on('data', (trozo) => {
+        if (excedido) return;
         total += trozo.length;
-        if (total > TAMANO_MAXIMO_CUERPO) {
-          rechazar(new ErrorApi(413, 'Los datos enviados son demasiado grandes.'));
-          req.destroy();
+        if (total > maximo) {
+          // Se deja de guardar, pero se sigue recibiendo para poder responder
+          // con un mensaje claro en lugar de cortar la conexión.
+          excedido = true;
+          trozos.length = 0;
+          rechazar(new ErrorApi(413, mensajeExceso));
           return;
         }
         trozos.push(trozo);
       });
       req.on('error', rechazar);
       req.on('end', () => {
-        if (total === 0) return resolver({});
-        try {
-          const datos = JSON.parse(Buffer.concat(trozos).toString('utf8'));
-          if (datos === null || typeof datos !== 'object' || Array.isArray(datos)) throw new Error('forma');
-          resolver(datos);
-        } catch {
-          rechazar(new ErrorApi(400, 'Los datos enviados no se pudieron leer.'));
-        }
+        if (!excedido) resolver(Buffer.concat(trozos));
       });
     });
+  }
+
+  async function leerCuerpo(req) {
+    const bytes = await leerBytes(req, TAMANO_MAXIMO_CUERPO, 'Los datos enviados son demasiado grandes.');
+    if (bytes.length === 0) return {};
+    try {
+      const datos = JSON.parse(bytes.toString('utf8'));
+      if (datos === null || typeof datos !== 'object' || Array.isArray(datos)) throw new Error('forma');
+      return datos;
+    } catch {
+      throw new ErrorApi(400, 'Los datos enviados no se pudieron leer.');
+    }
   }
 
   function responder(res, estado, datos) {
@@ -790,6 +890,16 @@ function crearApi(db) {
       const elegida = candidatas.find((r) => r.metodo === req.method);
       if (!elegida) throw new ErrorApi(405, 'Operación no permitida en esa dirección.');
 
+      // Primero se revisa quién pide: nadie sin permiso llega a enviar datos.
+      let yo = null;
+      if (elegida.permiso !== 'publico') {
+        yo = sesionActual(req);
+        if (!yo) throw new ErrorApi(401, 'Su sesión terminó. Entre de nuevo con su usuario y contraseña.');
+        if (elegida.permiso === 'admin' && yo.rol !== 'admin') {
+          throw new ErrorApi(403, 'Solo un administrador puede hacer este cambio.');
+        }
+      }
+
       let cuerpo = {};
       if (req.method !== 'GET') {
         // Las peticiones que cambian datos deben venir de las páginas del propio
@@ -806,16 +916,12 @@ function crearApi(db) {
           if (anfitrion !== req.headers.host) throw new ErrorApi(403, 'Petición rechazada: origen no permitido.');
         }
         const tipo = (req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
-        if (tipo !== 'application/json') throw new ErrorApi(415, 'Los datos deben enviarse en formato JSON.');
-        cuerpo = await leerCuerpo(req);
-      }
-
-      let yo = null;
-      if (elegida.permiso !== 'publico') {
-        yo = sesionActual(req);
-        if (!yo) throw new ErrorApi(401, 'Su sesión terminó. Entre de nuevo con su usuario y contraseña.');
-        if (elegida.permiso === 'admin' && yo.rol !== 'admin') {
-          throw new ErrorApi(403, 'Solo un administrador puede hacer este cambio.');
+        if (elegida.imagen) {
+          if (!TIPOS_DE_IMAGEN.includes(tipo)) throw new ErrorApi(415, 'Suba una imagen JPG, PNG o WebP.');
+          cuerpo = await leerBytes(req, TAMANO_MAXIMO_IMAGEN, 'La imagen es demasiado grande. El máximo es 8 MB.');
+        } else {
+          if (tipo !== 'application/json') throw new ErrorApi(415, 'Los datos deben enviarse en formato JSON.');
+          cuerpo = await leerCuerpo(req);
         }
       }
 
@@ -832,6 +938,7 @@ function crearApi(db) {
         res.destroy();
         return;
       }
+      req.resume(); // descarta lo que falte por llegar para que la respuesta salga limpia
       if (error instanceof ErrorApi) {
         responder(res, error.estado, { error: error.message });
       } else {

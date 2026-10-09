@@ -922,6 +922,112 @@ main {
   font-weight: 600;
 }
 
+/* ---------- Fondo de pantalla ----------
+   La imagen va fija detrás de todo. El contenido se apoya en una lámina clara
+   translúcida para que el texto se siga leyendo sobre cualquier imagen. */
+
+html.con-fondo body {
+  background: transparent;
+}
+
+html.con-fondo body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: var(--fondo-imagen) center / cover no-repeat var(--concreto);
+}
+
+html.con-fondo body.con-marco main {
+  background: rgba(232, 235, 233, 0.74);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+}
+
+/* Sobre la lámina, el texto secundario se oscurece para que no pierda contraste. */
+html.con-fondo .encabezado .subtitulo,
+html.con-fondo main > .volver {
+  color: var(--acero);
+}
+
+html.con-fondo .vacio {
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--acero);
+}
+
+@media (max-width: 860px) {
+  html.con-fondo body.con-marco main {
+    min-height: calc(100vh - 110px);
+    background: rgba(232, 235, 233, 0.64);
+    -webkit-backdrop-filter: blur(1px);
+    backdrop-filter: blur(1px);
+  }
+}
+
+.panel-fondos {
+  max-width: 760px;
+}
+
+.panel-fondos > p {
+  margin-bottom: 16px;
+}
+
+.fondos {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.fondo-opcion {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  padding: 6px 6px 8px;
+  border: 2px solid var(--linea);
+  border-radius: 6px;
+  background: var(--superficie);
+  color: var(--acero);
+  font: 600 0.9375rem/1.3 var(--texto);
+  text-align: left;
+  cursor: pointer;
+}
+
+.fondo-opcion:hover {
+  border-color: var(--linea-fuerte);
+}
+
+.fondo-opcion[aria-pressed='true'] {
+  border-color: var(--maquina);
+  box-shadow: inset 0 0 0 1px var(--maquina);
+}
+
+.fondo-opcion[aria-pressed='true'] .fondo-nombre::before {
+  content: '✓ ';
+  color: var(--maquina);
+}
+
+.fondo-opcion .muestra {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  margin-bottom: 8px;
+  border-radius: 3px;
+  object-fit: cover;
+  background: var(--concreto);
+}
+
+.fondo-opcion .fondo-nombre {
+  display: block;
+  padding: 0 2px;
+}
+
+.campo input[type='file'] {
+  display: block;
+  width: 100%;
+  font: inherit;
+}
+
 /* ---------- Diálogos y avisos ---------- */
 
 dialog {

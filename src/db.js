@@ -84,7 +84,15 @@ CREATE TABLE mantenimiento_piezas (
 
 // Cada entrada lleva la base de una versión a la siguiente. Para cambiar el
 // esquema más adelante se agrega una entrada nueva; nunca se edita una vieja.
-const MIGRACIONES = [ESQUEMA_V1];
+// Versión 2: ajustes generales del sistema (por ejemplo, el fondo elegido).
+const ESQUEMA_V2 = `
+CREATE TABLE ajustes (
+  clave  TEXT PRIMARY KEY,
+  valor  TEXT NOT NULL
+);
+`;
+
+const MIGRACIONES = [ESQUEMA_V1, ESQUEMA_V2];
 
 function abrirBase(ruta) {
   if (ruta !== ':memory:') fs.mkdirSync(path.dirname(ruta), { recursive: true });

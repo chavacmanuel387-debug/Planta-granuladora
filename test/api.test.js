@@ -40,7 +40,7 @@ function cliente() {
     if (galleta) opciones.headers.Cookie = galleta;
     if (metodo !== 'GET') {
       opciones.headers['Content-Type'] = opciones.headers['Content-Type'] || 'application/json';
-      opciones.body = typeof cuerpo === 'string' ? cuerpo : JSON.stringify(cuerpo || {});
+      opciones.body = typeof cuerpo === 'string' || Buffer.isBuffer(cuerpo) ? cuerpo : JSON.stringify(cuerpo || {});
     }
     const respuesta = await fetch(base + ruta, opciones);
     const nueva = respuesta.headers.get('set-cookie');
@@ -386,6 +386,55 @@ test('eliminar: pieza, mantenimiento y equipo con todo lo suyo', async () => {
   assert.equal((await admin('GET', `/api/equipos/${ids.secador}`)).estado, 404);
 });
 
+test('fondo de pantalla: fondos incluidos, imagen propia y permisos', async () => {
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64, 7)]);
+  const comoPng = { 'Content-Type': 'image/png' };
+
+  assert.deepEqual((await cliente()('GET', '/api/estado')).datos.fondo, { nombre: 'ninguno', url: null, urlPropia: null });
+
+  // Solo el administrador cambia el fondo.
+  assert.equal((await mecanico('PUT', '/api/fondo', { fondo: 'noche' })).estado, 403);
+  assert.equal((await mecanico('POST', '/api/fondo/imagen', png, comoPng)).estado, 403);
+  assert.equal((await cliente()('POST', '/api/fondo/imagen', png, comoPng)).estado, 401);
+
+  const incluido = await admin('PUT', '/api/fondo', { fondo: 'atardecer' });
+  assert.equal(incluido.estado, 200);
+  assert.equal(incluido.datos.url, '/fondos/atardecer.svg');
+  for (const nombre of ['atardecer', 'noche', 'cerezos']) {
+    const dibujo = await fetch(`${base}/fondos/${nombre}.svg`);
+    assert.equal(dibujo.status, 200);
+    assert.match(dibujo.headers.get('content-type'), /image\/svg\+xml/);
+  }
+  assert.equal((await admin('PUT', '/api/fondo', { fondo: 'inventado' })).estado, 400);
+  assert.equal((await admin('PUT', '/api/fondo', { fondo: 'propio' })).estado, 400, 'todavía no hay imagen propia');
+  assert.equal((await fetch(`${base}/api/fondo/imagen`)).status, 404);
+
+  // Solo se aceptan fotos de verdad: se revisa el contenido, no la etiqueta.
+  const pagina = Buffer.from('<html><script>alert(1)</script></html>');
+  assert.equal((await admin('POST', '/api/fondo/imagen', pagina, comoPng)).estado, 400);
+  assert.equal((await admin('POST', '/api/fondo/imagen', png, { 'Content-Type': 'image/svg+xml' })).estado, 415);
+  assert.equal((await admin('POST', '/api/fondo/imagen', '{"a":1}')).estado, 415);
+  const enorme = Buffer.concat([png, Buffer.alloc(8 * 1024 * 1024)]);
+  assert.equal((await admin('POST', '/api/fondo/imagen', enorme, comoPng)).estado, 413);
+  assert.equal((await admin('GET', '/api/estado')).datos.fondo.nombre, 'atardecer', 'los intentos fallidos no cambian nada');
+
+  const subida = await admin('POST', '/api/fondo/imagen', png, comoPng);
+  assert.equal(subida.estado, 200);
+  assert.equal(subida.datos.nombre, 'propio');
+  assert.equal(subida.datos.url, '/api/fondo/imagen?v=1');
+
+  // La imagen se ve sin sesión, porque la pantalla de entrada también la usa.
+  const imagen = await fetch(base + subida.datos.url);
+  assert.equal(imagen.status, 200);
+  assert.equal(imagen.headers.get('content-type'), 'image/png');
+  assert.equal(imagen.headers.get('x-content-type-options'), 'nosniff');
+  assert.deepEqual(Buffer.from(await imagen.arrayBuffer()), png);
+
+  // Se puede volver a un fondo incluido y regresar a la imagen propia sin subirla otra vez.
+  assert.equal((await admin('PUT', '/api/fondo', { fondo: 'ninguno' })).datos.url, null);
+  assert.equal((await admin('PUT', '/api/fondo', { fondo: 'propio' })).datos.url, '/api/fondo/imagen?v=1');
+});
+
 test('persistencia: al reiniciar el servidor todo sigue guardado y salir cierra la sesión', async () => {
   await detener();
   await iniciar();
@@ -393,6 +442,7 @@ test('persistencia: al reiniciar el servidor todo sigue guardado y salir cierra 
   const estado = await admin('GET', '/api/estado');
   assert.equal(estado.datos.configurado, true);
   assert.equal(estado.datos.usuario.usuario, 'manuel', 'la sesión sobrevive al reinicio');
+  assert.equal(estado.datos.fondo.nombre, 'propio', 'el fondo elegido también se conserva');
 
   const equipos = await admin('GET', '/api/equipos');
   assert.deepEqual(equipos.datos.map((e) => e.nombre), ['Tambor granulador']);

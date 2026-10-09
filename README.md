@@ -7,6 +7,7 @@ Sistema web para llevar el mantenimiento de la planta. Se abre desde el navegado
 - **Personal**: registra mecánicos, soldadores, electricistas y supervisores. A cada persona se le puede crear **su propio usuario y contraseña**.
 - **Equipos**: registra todos los equipos de la planta con su **nombre**, su **ubicación técnica** y las **piezas** que lleva cada uno (nombre, código o número de parte, cantidad y notas).
 - **Mantenimientos**: programa trabajos preventivos y correctivos por equipo, con fecha, personal asignado y piezas a trabajar. Cada trabajo se inicia, se termina con observaciones y queda en el historial del equipo. Los atrasados se marcan en rojo.
+- **Fondo de pantalla**: el administrador elige en **Mi cuenta** uno de los fondos de paisaje incluidos (atardecer, noche de estrellas, cerezos en flor) o sube una imagen propia. Todos los usuarios ven el fondo elegido.
 - **Base de datos**: todo lo que se agrega queda guardado en un archivo de base de datos SQLite (`datos/planta.db`) y sigue ahí al apagar y encender la computadora.
 
 ## Cómo ponerlo en marcha
@@ -48,6 +49,8 @@ En la carpeta `datos/`, dentro de la carpeta del sistema. **No borre esa carpeta
 
 Para sacar una copia de seguridad entre como administrador a **Mi cuenta → Descargar respaldo** y guarde el archivo en una memoria USB o en otra computadora. Hágalo con regularidad.
 
+El respaldo no incluye la imagen propia de fondo (archivo `datos/fondo-propio`); si la pierde, basta con subirla de nuevo.
+
 Para restaurar un respaldo: apague el sistema, borre los archivos de la carpeta `datos/`, copie ahí el respaldo con el nombre `planta.db` y vuelva a iniciar.
 
 ## Seguridad
@@ -75,6 +78,7 @@ src/db.js          Esquema de la base de datos y migraciones
 src/seguridad.js   Contraseñas y sesiones
 src/api.js         Rutas de la API, permisos y validaciones
 public/            Interfaz (HTML, CSS y JavaScript sin bibliotecas)
+public/fondos/     Fondos de paisaje incluidos (dibujos propios en SVG)
 test/api.test.js   Pruebas de punta a punta
 ```
 
