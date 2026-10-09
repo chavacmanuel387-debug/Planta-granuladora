@@ -1,0 +1,5 @@
+# La base de datos de la planta se queda en la computadora, no se sube a GitHub
+datos/
+
+node_modules/
+*.log
