@@ -53,7 +53,8 @@ function servirArchivo(req, res, ruta) {
 
 function crearServidor({ rutaBase }) {
   const db = abrirBase(rutaBase);
-  const api = crearApi(db);
+  const carpetaDatos = rutaBase === ':memory:' ? null : path.dirname(rutaBase);
+  const api = crearApi(db, { carpetaDatos });
 
   const servidor = http.createServer((req, res) => {
     for (const [nombre, valor] of Object.entries(CABECERAS_DE_SEGURIDAD)) res.setHeader(nombre, valor);

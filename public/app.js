@@ -21,6 +21,25 @@ let yo = null;
 let serie = 0;
 const filtros = { estado: 'abiertos', texto: '', equipos: '' };
 
+// Fondo de pantalla elegido por el administrador (lo informa el servidor).
+const FONDOS = [
+  ['ninguno', 'Sin fondo', null],
+  ['atardecer', 'Atardecer', '/fondos/atardecer.svg'],
+  ['noche', 'Noche de estrellas', '/fondos/noche.svg'],
+  ['cerezos', 'Cerezos en flor', '/fondos/cerezos.svg'],
+];
+const TIPOS_DE_IMAGEN = ['image/jpeg', 'image/png', 'image/webp'];
+const TAMANO_MAXIMO_IMAGEN = 8 * 1024 * 1024;
+let fondo = { nombre: 'ninguno', url: null, urlPropia: null };
+
+function aplicarFondo(nuevo) {
+  if (nuevo) fondo = nuevo;
+  const raiz = document.documentElement;
+  raiz.classList.toggle('con-fondo', Boolean(fondo.url));
+  if (fondo.url) raiz.style.setProperty('--fondo-imagen', `url("${fondo.url}")`);
+  else raiz.style.removeProperty('--fondo-imagen');
+}
+
 // ---------- Utilidades ----------
 
 function h(etiqueta, atributos, ...hijos) {
@@ -1089,6 +1108,77 @@ async function vistaPersonal() {
 
 // ---------- Mi cuenta ----------
 
+// Panel donde el administrador elige el fondo que ven todos, o sube una imagen.
+function panelDeFondos() {
+  const opciones = [...FONDOS];
+  if (fondo.urlPropia) opciones.push(['propio', 'Imagen propia', fondo.urlPropia]);
+
+  async function elegir(nombre) {
+    try {
+      aplicarFondo(await api('PUT', '/api/fondo', { fondo: nombre }));
+      avisar(nombre === 'ninguno' ? 'Fondo quitado' : 'Fondo cambiado');
+      navegar();
+    } catch (fallo) {
+      if (yo) avisar(fallo.message, true);
+    }
+  }
+
+  const archivo = h('input', { type: 'file', accept: TIPOS_DE_IMAGEN.join(',') });
+  archivo.addEventListener('change', async () => {
+    const imagen = archivo.files[0];
+    if (!imagen) return;
+    try {
+      if (!TIPOS_DE_IMAGEN.includes(imagen.type)) throw new Error('Elija una imagen JPG, PNG o WebP.');
+      if (imagen.size > TAMANO_MAXIMO_IMAGEN) throw new Error('La imagen es demasiado grande. El máximo es 8 MB.');
+      archivo.disabled = true;
+      let respuesta;
+      try {
+        respuesta = await fetch('/api/fondo/imagen', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': imagen.type },
+          body: imagen,
+        });
+      } catch {
+        throw new Error('No se pudo subir la imagen. Revise la conexión y vuelva a intentar.');
+      }
+      const datos = await respuesta.json().catch(() => null);
+      if (!respuesta.ok) throw new Error((datos && datos.error) || 'No se pudo subir la imagen.');
+      aplicarFondo(datos);
+      avisar('Imagen subida y puesta como fondo');
+      navegar();
+    } catch (fallo) {
+      archivo.disabled = false;
+      archivo.value = '';
+      avisar(fallo.message, true);
+    }
+  });
+
+  return h(
+    'div',
+    { class: 'fila panel panel-fondos' },
+    h('h2', {}, 'Fondo de pantalla'),
+    h('p', {}, 'El fondo que elija lo verán todas las personas que usen el sistema.'),
+    h(
+      'div',
+      { class: 'fondos', role: 'group', 'aria-label': 'Fondos disponibles' },
+      opciones.map(([nombre, texto, muestra]) =>
+        h(
+          'button',
+          { type: 'button', class: 'fondo-opcion', 'aria-pressed': String(fondo.nombre === nombre), onclick: () => elegir(nombre) },
+          muestra ? h('img', { class: 'muestra', src: muestra, alt: '', loading: 'lazy' }) : h('span', { class: 'muestra lisa' }),
+          h('span', { class: 'fondo-nombre' }, texto),
+        ),
+      ),
+    ),
+    campo(
+      fondo.urlPropia ? 'Cambiar la imagen propia' : 'Subir una imagen propia',
+      archivo,
+      'JPG, PNG o WebP, de 8 MB como máximo. La imagen queda guardada solo en esta computadora.',
+    ),
+  );
+}
+
 async function vistaCuenta() {
   const actual = h('input', { type: 'password', autocomplete: 'current-password' });
   const nueva = h('input', { type: 'password', autocomplete: 'new-password' });
@@ -1142,6 +1232,7 @@ async function vistaCuenta() {
       ),
     ),
     h('section', { class: 'seccion' }, formulario),
+    yo.rol === 'admin' && h('section', { class: 'seccion' }, panelDeFondos()),
     yo.rol === 'admin' &&
       h(
         'section',
@@ -1163,6 +1254,7 @@ async function iniciar() {
   try {
     const estado = await api('GET', '/api/estado');
     planta = estado.planta;
+    aplicarFondo(estado.fondo);
     if (!estado.configurado) {
       pantallaConfigurar();
     } else if (!estado.usuario) {
