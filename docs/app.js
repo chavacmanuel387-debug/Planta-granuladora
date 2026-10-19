@@ -1,6 +1,5 @@
-'use strict';
-
 // Interfaz del sistema de mantenimiento. JavaScript puro, sin bibliotecas.
+// Los datos se guardan en Firebase (ver datos.js y firebase.js).
 // Todo el contenido se arma con h(), que inserta el texto como texto (nunca
 // como HTML), así lo que escriba un usuario no puede alterar la página.
 
@@ -15,7 +14,11 @@ const TIPOS = { preventivo: 'Preventivo', correctivo: 'Correctivo' };
 const ESTADOS = { pendiente: 'Pendiente', en_proceso: 'En proceso', terminado: 'Terminado' };
 const CONTRASENA_MINIMA = 8;
 
+import { firebaseConfig } from './config.js';
+import { crearDatos } from './datos.js';
+
 const $app = document.getElementById('app');
+let datos = null;
 let planta = 'PLANTA GRANULADORA EL PILAR';
 let yo = null;
 let serie = 0;
@@ -24,12 +27,12 @@ const filtros = { estado: 'abiertos', texto: '', equipos: '' };
 // Fondo de pantalla elegido por el administrador (lo informa el servidor).
 const FONDOS = [
   ['ninguno', 'Sin fondo', null],
-  ['atardecer', 'Atardecer', '/fondos/atardecer.svg'],
-  ['noche', 'Noche de estrellas', '/fondos/noche.svg'],
-  ['cerezos', 'Cerezos en flor', '/fondos/cerezos.svg'],
+  ['atardecer', 'Atardecer', 'fondos/atardecer.svg'],
+  ['noche', 'Noche de estrellas', 'fondos/noche.svg'],
+  ['cerezos', 'Cerezos en flor', 'fondos/cerezos.svg'],
 ];
 const TIPOS_DE_IMAGEN = ['image/jpeg', 'image/png', 'image/webp'];
-const TAMANO_MAXIMO_IMAGEN = 8 * 1024 * 1024;
+const TAMANO_MAXIMO_IMAGEN = 20 * 1024 * 1024;
 let fondo = { nombre: 'ninguno', url: null, urlPropia: null };
 
 function aplicarFondo(nuevo) {
@@ -59,35 +62,48 @@ function h(etiqueta, atributos, ...hijos) {
 }
 
 async function api(metodo, ruta, cuerpo) {
-  let respuesta;
   try {
-    respuesta = await fetch(ruta, {
-      method: metodo,
-      credentials: 'same-origin',
-      headers: metodo === 'GET' ? {} : { 'Content-Type': 'application/json' },
-      body: metodo === 'GET' ? undefined : JSON.stringify(cuerpo || {}),
-    });
-  } catch {
-    throw new Error('No hay conexión con el servidor. Revise que el sistema esté encendido y vuelva a intentar.');
-  }
-  let datos = null;
-  try {
-    datos = await respuesta.json();
-  } catch {
-    /* respuesta sin JSON */
-  }
-  if (!respuesta.ok) {
-    const error = new Error((datos && datos.error) || 'Ocurrió un error. Intente de nuevo.');
-    error.estado = respuesta.status;
-    if (respuesta.status === 401 && yo) {
-      yo = null;
-      document.querySelectorAll('dialog').forEach((d) => d.close());
-      pantallaEntrar(error.message);
-    }
+    return await datos.api(metodo, ruta, cuerpo || {});
+  } catch (fallo) {
+    const error = new Error(fallo.message || 'Ocurrió un error. Intente de nuevo.');
+    error.estado = fallo.estado || 500;
+    if (error.estado === 401 && yo) sesionPerdida(error.message);
     throw error;
   }
-  return datos;
 }
+
+function sesionPerdida(mensaje) {
+  if (!yo) return;
+  yo = null;
+  document.querySelectorAll('dialog').forEach((d) => d.close());
+  pantallaEntrar(mensaje);
+}
+
+// Cuando otra persona cambia algo, la pantalla se actualiza sola. Si en ese
+// momento alguien está escribiendo o tiene un formulario abierto, se espera a
+// que termine para no borrarle lo que lleva.
+let refrescoPendiente = false;
+let relojRefresco = 0;
+function estaOcupado() {
+  const activo = document.activeElement;
+  return Boolean(document.querySelector('dialog[open]')) || Boolean(activo && activo.matches('main input, main textarea, main select'));
+}
+function refrescar() {
+  clearTimeout(relojRefresco);
+  relojRefresco = setTimeout(() => {
+    if (!yo) return;
+    if (estaOcupado()) {
+      refrescoPendiente = true;
+      return;
+    }
+    refrescoPendiente = false;
+    navegar();
+  }, 200);
+}
+function revisarRefrescoPendiente() {
+  if (refrescoPendiente) refrescar();
+}
+document.addEventListener('focusout', () => setTimeout(revisarRefrescoPendiente, 50));
 
 function dos(n) {
   return String(n).padStart(2, '0');
@@ -213,7 +229,10 @@ function abrirFormulario({ titulo, cuerpo, textoGuardar, guardar, claseGuardar =
       botones.forEach((b) => (b.disabled = false));
     }
   });
-  dialogo.addEventListener('close', () => dialogo.remove());
+  dialogo.addEventListener('close', () => {
+    dialogo.remove();
+    setTimeout(revisarRefrescoPendiente, 50);
+  });
   document.body.append(dialogo);
   dialogo.showModal();
   return dialogo;
@@ -369,7 +388,7 @@ const RUTAS = [
   [/^#\/inicio$/, vistaInicio],
   [/^#\/mantenimientos$/, vistaMantenimientos],
   [/^#\/equipos$/, vistaEquipos],
-  [/^#\/equipos\/(\d+)$/, vistaEquipo],
+  [/^#\/equipos\/([A-Za-z0-9_-]+)$/, vistaEquipo],
   [/^#\/personal$/, vistaPersonal],
   [/^#\/cuenta$/, vistaCuenta],
 ];
@@ -583,7 +602,7 @@ async function formularioTrabajo({ trabajo = null, equipoId = null } = {}) {
   });
   cargarPiezas();
 
-  const marcados = (caja, nombre) => [...caja.querySelectorAll(`input[name="${nombre}"]:checked`)].map((c) => Number(c.value));
+  const marcados = (caja, nombre) => [...caja.querySelectorAll(`input[name="${nombre}"]:checked`)].map((c) => c.value);
 
   abrirFormulario({
     titulo: trabajo ? 'Editar mantenimiento' : 'Programar mantenimiento',
@@ -602,7 +621,7 @@ async function formularioTrabajo({ trabajo = null, equipoId = null } = {}) {
       if (!descripcion.value.trim()) throw new Error('Escriba el trabajo a realizar.');
       if (!fecha.value) throw new Error('Elija la fecha programada.');
       const datos = {
-        equipo_id: Number(equipo.value),
+        equipo_id: equipo.value,
         tipo: tipos.querySelector('input:checked').value,
         trabajo: descripcion.value,
         fecha_programada: fecha.value,
@@ -1108,6 +1127,44 @@ async function vistaPersonal() {
 
 // ---------- Mi cuenta ----------
 
+// Achica la imagen en el navegador para que quepa en Firestore (menos de 1 MB)
+// y cargue rápido. Devuelve el texto "data:image/jpeg;base64,...".
+async function reducirImagen(archivo) {
+  let mapa;
+  try {
+    mapa = await createImageBitmap(archivo);
+  } catch {
+    throw new Error('No se pudo leer la imagen. Pruebe con otra foto JPG o PNG.');
+  }
+  for (const [lado, calidad] of [[1920, 0.8], [1600, 0.72], [1280, 0.65], [1024, 0.6]]) {
+    const escala = Math.min(1, lado / Math.max(mapa.width, mapa.height));
+    const lienzo = document.createElement('canvas');
+    lienzo.width = Math.round(mapa.width * escala);
+    lienzo.height = Math.round(mapa.height * escala);
+    lienzo.getContext('2d').drawImage(mapa, 0, 0, lienzo.width, lienzo.height);
+    const resultado = lienzo.toDataURL('image/jpeg', calidad);
+    if (resultado.length < 900 * 1024) return resultado;
+  }
+  throw new Error('La imagen tiene demasiado detalle para usarse como fondo. Pruebe con otra.');
+}
+
+function descargarRespaldo() {
+  return async () => {
+    try {
+      const copia = await api('GET', '/api/respaldo');
+      const archivo = new Blob([JSON.stringify(copia, null, 2)], { type: 'application/json' });
+      const enlace = h('a', { href: URL.createObjectURL(archivo), download: `respaldo-planta-el-pilar-${hoy()}.json` });
+      document.body.append(enlace);
+      enlace.click();
+      enlace.remove();
+      setTimeout(() => URL.revokeObjectURL(enlace.href), 10000);
+      avisar('Respaldo descargado');
+    } catch (fallo) {
+      if (yo) avisar(fallo.message, true);
+    }
+  };
+}
+
 // Panel donde el administrador elige el fondo que ven todos, o sube una imagen.
 function panelDeFondos() {
   const opciones = [...FONDOS];
@@ -1131,20 +1188,8 @@ function panelDeFondos() {
       if (!TIPOS_DE_IMAGEN.includes(imagen.type)) throw new Error('Elija una imagen JPG, PNG o WebP.');
       if (imagen.size > TAMANO_MAXIMO_IMAGEN) throw new Error('La imagen es demasiado grande. El máximo es 8 MB.');
       archivo.disabled = true;
-      let respuesta;
-      try {
-        respuesta = await fetch('/api/fondo/imagen', {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: { 'Content-Type': imagen.type },
-          body: imagen,
-        });
-      } catch {
-        throw new Error('No se pudo subir la imagen. Revise la conexión y vuelva a intentar.');
-      }
-      const datos = await respuesta.json().catch(() => null);
-      if (!respuesta.ok) throw new Error((datos && datos.error) || 'No se pudo subir la imagen.');
-      aplicarFondo(datos);
+      const reducida = await reducirImagen(imagen);
+      aplicarFondo(await api('POST', '/api/fondo/imagen', { imagen: reducida }));
       avisar('Imagen subida y puesta como fondo');
       navegar();
     } catch (fallo) {
@@ -1174,7 +1219,7 @@ function panelDeFondos() {
     campo(
       fondo.urlPropia ? 'Cambiar la imagen propia' : 'Subir una imagen propia',
       archivo,
-      'JPG, PNG o WebP, de 8 MB como máximo. La imagen queda guardada solo en esta computadora.',
+      'JPG, PNG o WebP. Se reduce automáticamente para que cargue rápido en los teléfonos.',
     ),
   );
 }
@@ -1240,9 +1285,9 @@ async function vistaCuenta() {
         h(
           'div',
           { class: 'fila panel con-pie' },
-          h('h2', {}, 'Respaldo de la base de datos'),
-          h('p', {}, 'Descargue una copia de todo lo guardado en el sistema: personal, usuarios, equipos, piezas y mantenimientos. Guárdela en una memoria USB o en otra computadora.'),
-          h('a', { class: 'boton secundario', href: '/api/respaldo', download: '' }, 'Descargar respaldo'),
+          h('h2', {}, 'Copia de respaldo'),
+          h('p', {}, 'Los datos ya quedan guardados en Firebase. Si quiere una copia propia de todo (personal, usuarios, equipos, piezas y mantenimientos), descárguela aquí y guárdela en una memoria USB o en su computadora.'),
+          boton('Descargar respaldo', descargarRespaldo(), 'secundario'),
         ),
       ),
   ];
@@ -1252,6 +1297,20 @@ async function vistaCuenta() {
 
 async function iniciar() {
   try {
+    if (!datos) {
+      if (!firebaseConfig || !firebaseConfig.projectId) {
+        throw new Error('Falta conectar el sistema con Firebase: copie los datos de su proyecto en el archivo config.js.');
+      }
+      let conectarFirebase;
+      try {
+        ({ conectarFirebase } = await import('./firebase.js'));
+      } catch {
+        throw new Error('No se pudo conectar con Firebase. Revise la conexión a internet y vuelva a intentar.');
+      }
+      const nuevos = crearDatos(conectarFirebase(firebaseConfig));
+      await nuevos.iniciar({ alCambiar: refrescar, alPerderSesion: sesionPerdida });
+      datos = nuevos;
+    }
     const estado = await api('GET', '/api/estado');
     planta = estado.planta;
     aplicarFondo(estado.fondo);
