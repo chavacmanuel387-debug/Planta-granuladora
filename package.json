@@ -1,14 +1,13 @@
 {
   "name": "planta-granuladora-el-pilar",
-  "version": "1.0.0",
-  "description": "Sistema de mantenimiento de la PLANTA GRANULADORA EL PILAR",
+  "version": "2.0.0",
+  "description": "Sistema de mantenimiento de la PLANTA GRANULADORA EL PILAR (Firebase + GitHub Pages)",
   "private": true,
-  "main": "server.js",
+  "type": "module",
   "scripts": {
-    "start": "node --disable-warning=ExperimentalWarning server.js",
-    "test": "node --disable-warning=ExperimentalWarning --test"
+    "test": "node --test"
   },
   "engines": {
-    "node": ">=22.13"
+    "node": ">=20"
   }
 }

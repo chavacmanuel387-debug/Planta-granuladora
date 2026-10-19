@@ -1,0 +1,124 @@
+rules_version = '2';
+
+// Reglas de seguridad del sistema de mantenimiento — PLANTA GRANULADORA EL PILAR.
+// Se pegan en Firebase: Firestore Database → Reglas → Publicar.
+//
+// Quién puede hacer qué:
+//   - Sin sesión: solo ver el fondo de pantalla y buscar un nombre de usuario para entrar.
+//   - Técnico activo: ver todo; programar mantenimientos; editar los suyos;
+//     iniciar, terminar o reabrir cualquiera.
+//   - Administrador activo: todo lo anterior, más equipos, piezas, personal,
+//     usuarios, fondo y eliminar.
+// Una cuenta de Firebase sin documento en "cuentas", o cuya persona esté
+// desactivada, no puede leer ni escribir nada.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function ruta(p) { return /databases/$(database)/documents/$(p); }
+    function conSesion() { return request.auth != null; }
+    function tieneCuenta() { return conSesion() && exists(ruta('cuentas/' + request.auth.uid)); }
+    function cuenta() { return get(ruta('cuentas/' + request.auth.uid)).data; }
+    function yo() { return cuenta().personal_id; }
+    function activo() {
+      return tieneCuenta() && get(ruta('personal/' + yo())).data.activo == true;
+    }
+    function admin() { return activo() && cuenta().rol == 'admin'; }
+
+    // Configuración inicial: solo mientras no exista ajustes/sistema, y en el
+    // mismo envío que lo crea a nombre de quien se registra.
+    function configurando() {
+      return conSesion()
+        && !exists(ruta('ajustes/sistema'))
+        && getAfter(ruta('ajustes/sistema')).data.admin_inicial == request.auth.uid;
+    }
+
+    function texto(v, max) { return v is string && v.size() <= max; }
+    function textoLleno(v, max) { return texto(v, max) && v.size() > 0; }
+
+    match /ajustes/{clave} {
+      allow read: if true;
+      allow create: if (clave == 'sistema'
+          && configurando()
+          && request.resource.data.keys().hasOnly(['configurado', 'admin_inicial', 'creado_en']))
+        || (clave != 'sistema' && admin());
+      allow update, delete: if clave != 'sistema' && admin();
+    }
+
+    match /nombres/{usuario} {
+      // Se puede consultar un nombre puntual para entrar, pero no listarlos todos.
+      allow get: if true;
+      allow list: if false;
+      allow create: if (admin() || (configurando() && request.resource.data.uid == request.auth.uid))
+        && request.resource.data.keys().hasOnly(['uid', 'email'])
+        && usuario.matches('^[a-z0-9][a-z0-9._-]{2,29}$');
+      allow update, delete: if admin();
+    }
+
+    match /cuentas/{uid} {
+      allow read: if (conSesion() && uid == request.auth.uid) || admin();
+      allow create: if (admin() || (configurando() && uid == request.auth.uid && request.resource.data.rol == 'admin'))
+        && request.resource.data.keys().hasOnly(['personal_id', 'usuario', 'rol'])
+        && request.resource.data.rol in ['admin', 'tecnico'];
+      // Nadie se quita a sí mismo el acceso de administrador: así siempre queda uno.
+      allow update: if admin()
+        && request.resource.data.rol in ['admin', 'tecnico']
+        && request.resource.data.personal_id == resource.data.personal_id
+        && (uid != request.auth.uid || request.resource.data.rol == resource.data.rol);
+      allow delete: if admin() && uid != request.auth.uid;
+    }
+
+    match /personal/{id} {
+      allow read: if activo();
+      allow create: if (admin() || configurando())
+        && textoLleno(request.resource.data.nombre, 120)
+        && request.resource.data.puesto in ['mecanico', 'soldador', 'electricista', 'supervisor', 'otro']
+        && request.resource.data.activo is bool;
+      allow update: if admin()
+        && textoLleno(request.resource.data.nombre, 120)
+        && request.resource.data.puesto in ['mecanico', 'soldador', 'electricista', 'supervisor', 'otro']
+        && request.resource.data.activo is bool
+        && (id != yo() || request.resource.data.activo == true);
+      allow delete: if admin() && id != yo();
+    }
+
+    match /equipos/{id} {
+      allow read: if activo();
+      allow write: if admin();
+    }
+
+    match /piezas/{id} {
+      allow read: if activo();
+      allow write: if admin();
+    }
+
+    match /mantenimientos/{id} {
+      function valido(d) {
+        return d.tipo in ['preventivo', 'correctivo']
+          && d.estado in ['pendiente', 'en_proceso', 'terminado']
+          && textoLleno(d.trabajo, 160)
+          && texto(d.detalles, 2000)
+          && texto(d.observaciones, 2000)
+          && d.personal_ids is list && d.personal_ids.size() <= 200
+          && d.pieza_ids is list && d.pieza_ids.size() <= 200
+          && exists(ruta('equipos/' + d.equipo_id));
+      }
+      // Cambios que cualquier técnico puede hacer en cualquier trabajo.
+      function soloEstado() {
+        return request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['estado', 'fecha_terminado', 'terminado_por', 'observaciones'])
+          && (request.resource.data.terminado_por == null || request.resource.data.terminado_por == yo());
+      }
+
+      allow read: if activo();
+      allow create: if activo()
+        && valido(request.resource.data)
+        && request.resource.data.creado_por == yo();
+      allow update: if activo()
+        && valido(request.resource.data)
+        && request.resource.data.creado_por == resource.data.creado_por
+        && (admin() || resource.data.creado_por == yo() || soloEstado());
+      allow delete: if admin();
+    }
+  }
+}
